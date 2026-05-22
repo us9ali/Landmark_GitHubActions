@@ -1,22 +1,18 @@
-# PersistentVolume — the actual storage resource
-apiVersion: v1
-kind: PersistentVolume
+# StorageClass for AWS EBS (gp3) using the EBS CSI Driver
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
 metadata:
-  name: landmark-db-pv
-  labels:
-    app: landmark
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: landmark-storage
-  hostPath:
-    path: /mnt/data/landmark-db
+  name: ebs-gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  fsType: ext4
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
 
 ---
-# PersistentVolumeClaim — a request for storage by a pod
+# PersistentVolumeClaim — dynamically provisions an EBS volume via the StorageClass
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -25,19 +21,72 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: landmark-storage
+  storageClassName: ebs-gp3
   resources:
     requests:
       storage: 20Gi
 
 ---
-# StorageClass — defines how volumes are dynamically provisioned
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
+# Deployment that mounts the EBS volume
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: landmark-storage
-provisioner: kubernetes.io/aws-ebs
-parameters:
-  type: gp3
-allowVolumeExpansion: true
-volumeBindingMode: WaitForFirstConsumer
+  name: landmark-db
+  namespace: landmark-devops
+  labels:
+    app: landmark-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: landmark-db
+  template:
+    metadata:
+      labels:
+        app: landmark-db
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: landmark-db-pvc
+
+---
+# (Optional) Static PV — use this ONLY if you have a pre-existing EBS volume
+# Replace vol-xxxxxxxxxxxxxxxxx with your actual EBS volume ID
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: landmark-db-pv-static
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ebs-gp3
+  csi:
+    driver: ebs.csi.aws.com
+    volumeHandle: vol-xxxxxxxxxxxxxxxxx   # Your existing EBS volume ID
+    fsType: ext4
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: topology.ebs.csi.aws.com/zone
+              operator: In
+              values:
+                - us-east-1a   # Must match the AZ of the EBS volume
