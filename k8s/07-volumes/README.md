@@ -1,13 +1,46 @@
 # Volumes: AWS EBS with PV, PVC & StorageClass
 
-## What are Volumes?
+## Definitions
 
-Containers are ephemeral — when a pod dies, its data is lost. Volumes provide persistent storage that survives pod restarts and rescheduling.
+| Term | What It Is | Analogy |
+|------|-----------|---------|
+| **Volume** | Storage attached to a pod | A USB drive plugged into a computer |
+| **PersistentVolume (PV)** | A piece of storage provisioned in the cluster | The actual hard disk |
+| **PersistentVolumeClaim (PVC)** | A request for storage by a pod | A purchase order for a hard disk |
+| **StorageClass** | A template that defines how to create volumes | The catalog you order from |
+| **CSI Driver** | Plugin that connects K8s to a storage backend (EBS, EFS, etc.) | The driver software for the disk |
 
-**Three objects work together:**
-- `StorageClass` — Defines HOW volumes are dynamically provisioned (e.g., AWS EBS gp3)
-- `PersistentVolumeClaim (PVC)` — A request for storage ("I need 20Gi")
-- `PersistentVolume (PV)` — The actual storage resource (created automatically with dynamic provisioning)
+## Why Do We Need Volumes?
+
+- Containers are **ephemeral** — when a pod restarts, all data inside is lost
+- Volumes provide **persistent storage** that survives pod restarts, crashes, and rescheduling
+- Use cases: databases, file uploads, application logs, shared config files
+
+## Volume Types in Kubernetes
+
+| Type | Persistence | Use Case |
+|------|-------------|----------|
+| `emptyDir` | Deleted when pod dies | Temp files, caches, inter-container sharing |
+| `hostPath` | Tied to a specific node | Local dev only (never in production) |
+| `persistentVolumeClaim` | Survives pod restarts | Databases, uploads, anything that must persist |
+| `configMap` / `secret` | Read-only config files | Mounting config as files |
+
+## Access Modes
+
+| Mode | Short | Meaning |
+|------|-------|---------|
+| `ReadWriteOnce` | RWO | One node can read/write (EBS) |
+| `ReadOnlyMany` | ROX | Many nodes can read |
+| `ReadWriteMany` | RWX | Many nodes can read/write (requires EFS/NFS) |
+
+> **EBS only supports RWO** — if you need RWX, use AWS EFS.
+
+## Reclaim Policies
+
+| Policy | What Happens When PVC is Deleted |
+|--------|----------------------------------|
+| `Retain` | PV and EBS volume are kept (manual cleanup needed) |
+| `Delete` | PV and EBS volume are automatically deleted |
 
 ## Prerequisites: Install the AWS EBS CSI Driver
 
@@ -37,9 +70,6 @@ eksctl create addon \
   --force
 ```
 
-> **Note:** The role ARN above is created in Step 1. Verify with:
-> `aws iam list-roles --query "Roles[?contains(RoleName,'EBS')]" --output table`
-
 ### Step 3: Verify the Driver is Running
 
 ```bash
@@ -51,96 +81,110 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
 | Resource | Name | Purpose |
 |----------|------|---------|
 | StorageClass | `ebs-gp3` | Provisions gp3 EBS volumes dynamically |
-| PVC | `landmark-db-pvc` | Requests 20Gi of EBS storage |
-| Deployment | `landmark-db` | MySQL deployment that mounts the EBS volume |
+| PVC | `landmark-db-pvc` | Requests 20Gi for database |
+| PVC | `landmark-app-pvc` | Requests 5Gi for app uploads |
+| Deployment | `landmark-db` | MySQL with EBS volume mounted at `/var/lib/mysql` |
+| Deployment | `landmark-app` | App with EBS volume for uploads + emptyDir for logs |
 | PV (optional) | `landmark-db-pv-static` | For pre-existing EBS volumes |
 
-## Dynamic Provisioning (Recommended)
+## How Volume Mounting Works
 
-With dynamic provisioning, you only need a **StorageClass** and a **PVC**. The PV is created automatically.
-
-```yaml
-# StorageClass — tells K8s to use EBS CSI driver with gp3 volumes
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: ebs-gp3
-provisioner: ebs.csi.aws.com
-parameters:
-  type: gp3
-  fsType: ext4
-allowVolumeExpansion: true
-reclaimPolicy: Retain
-volumeBindingMode: WaitForFirstConsumer
+```
+┌─────────────────────────────────────────────────────┐
+│  Deployment spec                                     │
+│                                                      │
+│  volumes:                    ◄── Define the volume   │
+│    - name: db-storage                                │
+│      persistentVolumeClaim:                          │
+│        claimName: landmark-db-pvc  ◄── Link to PVC  │
+│                                                      │
+│  containers:                                         │
+│    volumeMounts:             ◄── Mount into container│
+│      - name: db-storage          (must match above) │
+│        mountPath: /var/lib/mysql  ◄── Path inside    │
+└─────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  PVC (landmark-db-pvc)      │
+│  storageClassName: ebs-gp3  │──── References StorageClass
+│  storage: 20Gi              │
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  StorageClass (ebs-gp3)     │
+│  provisioner: ebs.csi.aws.com ──── Creates EBS volume
+│  type: gp3                  │
+└─────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  AWS EBS Volume (gp3, 20Gi) │
+│  Created automatically       │
+└─────────────────────────────┘
 ```
 
-```yaml
-# PVC — requests storage, EBS volume is auto-created
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: landmark-db-pvc
-  namespace: landmark-devops
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ebs-gp3
-  resources:
-    requests:
-      storage: 20Gi
-```
+## Mounting Examples
 
-## Mounting the Volume to a Deployment
+### Mount a single volume
 
 ```yaml
 spec:
   containers:
     - name: mysql
-      image: mysql:8.0
       volumeMounts:
         - name: db-storage
-          mountPath: /var/lib/mysql    # Where data is stored inside the container
+          mountPath: /var/lib/mysql
   volumes:
     - name: db-storage
       persistentVolumeClaim:
-        claimName: landmark-db-pvc    # Must match the PVC name
+        claimName: landmark-db-pvc
 ```
 
-**Key points for mounting:**
-- `volumes[].name` must match `volumeMounts[].name`
-- `mountPath` is the directory inside the container where the EBS volume appears
-- `claimName` references the PVC that provisions the actual EBS disk
-
-## Static Provisioning (Pre-existing EBS Volume)
-
-If you already have an EBS volume, create a PV manually pointing to it:
+### Mount multiple volumes to one container
 
 ```yaml
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: landmark-db-pv-static
 spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ebs-gp3
-  csi:
-    driver: ebs.csi.aws.com
-    volumeHandle: vol-xxxxxxxxxxxxxxxxx   # Your EBS volume ID
-    fsType: ext4
-  nodeAffinity:
-    required:
-      nodeSelectorTerms:
-        - matchExpressions:
-            - key: topology.ebs.csi.aws.com/zone
-              operator: In
-              values:
-                - us-east-1a   # Must match the AZ of the EBS volume
+  containers:
+    - name: app
+      volumeMounts:
+        - name: uploads
+          mountPath: /app/uploads       # Persistent (EBS)
+        - name: logs
+          mountPath: /app/logs          # Temporary (emptyDir)
+  volumes:
+    - name: uploads
+      persistentVolumeClaim:
+        claimName: landmark-app-pvc
+    - name: logs
+      emptyDir: {}
 ```
 
-> **Important:** The EBS volume must be in the same AZ as the node that mounts it.
+### Mount with subPath (avoid overwriting existing files)
+
+```yaml
+volumeMounts:
+  - name: app-data
+    mountPath: /app/logs
+    subPath: logs           # Only mounts the "logs" subdirectory from the volume
+```
+
+## Important Notes
+
+1. **Strategy must be `Recreate`** — When using RWO volumes, you cannot use `RollingUpdate` because the old pod holds the volume lock. Use `strategy.type: Recreate`.
+
+2. **`WaitForFirstConsumer`** — The volume is NOT created until a pod is scheduled. This ensures the EBS volume is created in the same AZ as the node.
+
+3. **One volume per pod (RWO)** — EBS can only attach to one node. If you need shared storage across multiple pods, use EFS.
+
+4. **Volume expansion** — With `allowVolumeExpansion: true`, you can edit the PVC to request more storage:
+   ```bash
+   kubectl edit pvc landmark-db-pvc -n landmark-devops
+   # Change storage from 20Gi to 50Gi — no downtime needed
+   ```
+
+5. **Never use `hostPath` in production** — It ties your pod to a specific node and data is lost if the node dies.
 
 ## How to Run
 
@@ -153,6 +197,9 @@ kubectl get storageclass
 kubectl get pvc -n landmark-devops
 kubectl get pv
 kubectl get pods -n landmark-devops
+
+# Check volume is mounted inside the pod
+kubectl exec -it deploy/landmark-db -n landmark-devops -- df -h /var/lib/mysql
 ```
 
 ## Troubleshooting
@@ -161,30 +208,32 @@ kubectl get pods -n landmark-devops
 # PVC stuck in Pending
 kubectl describe pvc landmark-db-pvc -n landmark-devops
 # Common causes:
-#   - EBS CSI driver not installed (most common)
+#   - EBS CSI driver not installed
 #   - StorageClass doesn't exist
-#   - No nodes in the AZ (WaitForFirstConsumer waits for a pod to be scheduled)
+#   - WaitForFirstConsumer: no pod scheduled yet (this is normal, wait for deployment)
 
-# Check if EBS CSI driver is running
+# Pod stuck in ContainerCreating
+kubectl describe pod <pod-name> -n landmark-devops
+# Look for:
+#   - "AttachVolume.Attach failed" → IAM permissions or wrong AZ
+#   - "FailedMount" → volume is still attached to another node
+
+# Check EBS CSI driver
 kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
-
-# Check CSI driver logs
 kubectl logs -n kube-system -l app=ebs-csi-controller
 
-# Volume not mounting — check pod events
-kubectl describe pod <pod-name> -n landmark-devops
-# Look for: "AttachVolume.Attach failed" or "FailedMount"
-
-# IAM permission issues
-# Ensure the EBS CSI controller service account has the correct IAM role
-kubectl describe sa ebs-csi-controller-sa -n kube-system
+# Force detach a stuck volume (last resort)
+kubectl delete volumeattachment <attachment-name>
 ```
 
 ## Key Points
 
 - **EBS CSI Driver is required** on EKS — the old `kubernetes.io/aws-ebs` provisioner is deprecated
-- `WaitForFirstConsumer` delays volume creation until a pod needs it (ensures correct AZ)
-- EBS volumes are `ReadWriteOnce` only — one node at a time
-- Use `allowVolumeExpansion: true` to resize volumes later without recreating
-- `Retain` reclaim policy keeps the EBS volume even after PVC deletion
-- For multi-AZ read-write access, use EFS instead of EBS
+- `volumes[].name` must match `volumeMounts[].name` — this is how K8s links them
+- `mountPath` is where the volume appears inside the container
+- `claimName` in the volume spec must match an existing PVC name
+- Use `Recreate` strategy with RWO volumes to avoid mount conflicts
+- `WaitForFirstConsumer` ensures the EBS volume is in the correct AZ
+- Use `allowVolumeExpansion: true` to resize without recreating
+- `Retain` keeps data safe even if PVC is deleted
+- For multi-pod shared storage, use AWS EFS (not EBS)

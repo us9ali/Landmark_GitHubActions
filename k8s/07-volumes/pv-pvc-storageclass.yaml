@@ -1,18 +1,29 @@
+# =============================================================================
 # StorageClass for AWS EBS (gp3) using the EBS CSI Driver
+# =============================================================================
+# A StorageClass tells Kubernetes HOW to create volumes.
+# When a PVC references this class, the EBS CSI driver automatically
+# creates a gp3 EBS volume in the same AZ as the scheduled pod.
+# =============================================================================
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: ebs-gp3
-provisioner: ebs.csi.aws.com
+provisioner: ebs.csi.aws.com       # Uses the AWS EBS CSI driver (required on EKS)
 parameters:
-  type: gp3
-  fsType: ext4
-allowVolumeExpansion: true
-reclaimPolicy: Retain
-volumeBindingMode: WaitForFirstConsumer
+  type: gp3                         # EBS volume type (gp2, gp3, io1, io2, st1, sc1)
+  fsType: ext4                      # Filesystem format
+allowVolumeExpansion: true          # Allows resizing PVCs without recreating
+reclaimPolicy: Retain               # Keeps EBS volume after PVC is deleted
+volumeBindingMode: WaitForFirstConsumer  # Creates volume only when a pod needs it
 
 ---
-# PersistentVolumeClaim — dynamically provisions an EBS volume via the StorageClass
+# =============================================================================
+# PVC for the database — dynamically provisions an EBS volume
+# =============================================================================
+# A PVC is a REQUEST for storage. With dynamic provisioning, submitting a PVC
+# automatically creates an EBS volume matching the requested size and class.
+# =============================================================================
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -20,14 +31,33 @@ metadata:
   namespace: landmark-devops
 spec:
   accessModes:
-    - ReadWriteOnce
-  storageClassName: ebs-gp3
+    - ReadWriteOnce                 # EBS only supports RWO (single node)
+  storageClassName: ebs-gp3         # Must match the StorageClass name above
   resources:
     requests:
       storage: 20Gi
 
 ---
-# Deployment that mounts the EBS volume
+# =============================================================================
+# PVC for the app — for storing uploads/logs
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: landmark-app-pvc
+  namespace: landmark-devops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ebs-gp3
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# =============================================================================
+# Database Deployment — mounts EBS volume for MySQL data persistence
+# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,7 +66,9 @@ metadata:
   labels:
     app: landmark-db
 spec:
-  replicas: 1
+  replicas: 1                       # EBS is RWO, so only 1 replica can mount it
+  strategy:
+    type: Recreate                  # Must use Recreate (not RollingUpdate) with RWO volumes
   selector:
     matchLabels:
       app: landmark-db
@@ -58,15 +90,74 @@ spec:
                   key: DATABASE_URL
           volumeMounts:
             - name: db-storage
-              mountPath: /var/lib/mysql
+              mountPath: /var/lib/mysql       # MySQL data directory
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
       volumes:
-        - name: db-storage
+        - name: db-storage                   # This name links volumes <-> volumeMounts
           persistentVolumeClaim:
-            claimName: landmark-db-pvc
+            claimName: landmark-db-pvc       # References the PVC above
 
 ---
-# (Optional) Static PV — use this ONLY if you have a pre-existing EBS volume
-# Replace vol-xxxxxxxxxxxxxxxxx with your actual EBS volume ID
+# =============================================================================
+# App Deployment — mounts EBS volume for file uploads/logs
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: landmark-app
+  namespace: landmark-devops
+  labels:
+    app: landmark-app
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: landmark-app
+  template:
+    metadata:
+      labels:
+        app: landmark-app
+    spec:
+      containers:
+        - name: app
+          image: landmark-devops:latest
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: app-uploads
+              mountPath: /app/uploads        # App stores uploaded files here
+            - name: app-logs
+              mountPath: /app/logs           # App writes logs here
+              subPath: app-logs              # subPath avoids overwriting the entire volume
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+      volumes:
+        - name: app-uploads
+          persistentVolumeClaim:
+            claimName: landmark-app-pvc
+        - name: app-logs
+          emptyDir: {}                       # Temporary volume — lost when pod dies
+
+---
+# =============================================================================
+# (Optional) Static PV — for a PRE-EXISTING EBS volume
+# =============================================================================
+# Use this ONLY when you have an EBS volume already created in AWS.
+# Replace vol-xxxxxxxxxxxxxxxxx with your actual EBS volume ID.
+# =============================================================================
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -80,7 +171,7 @@ spec:
   storageClassName: ebs-gp3
   csi:
     driver: ebs.csi.aws.com
-    volumeHandle: vol-xxxxxxxxxxxxxxxxx   # Your existing EBS volume ID
+    volumeHandle: vol-xxxxxxxxxxxxxxxxx     # Your existing EBS volume ID
     fsType: ext4
   nodeAffinity:
     required:
@@ -89,4 +180,4 @@ spec:
             - key: topology.ebs.csi.aws.com/zone
               operator: In
               values:
-                - us-east-1a   # Must match the AZ of the EBS volume
+                - us-east-1a                # Must match the AZ of the EBS volume
