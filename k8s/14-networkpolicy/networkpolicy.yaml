@@ -1,0 +1,155 @@
+# =============================================================================
+# Default Deny All — block all ingress and egress traffic in the namespace
+# =============================================================================
+# Start with deny-all, then whitelist only what's needed (zero-trust approach)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: landmark-devops
+spec:
+  podSelector: {}          # Empty = applies to ALL pods in the namespace
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# =============================================================================
+# Allow app to receive traffic from the internet (ingress on port 3000)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-ingress
+  namespace: landmark-devops
+spec:
+  podSelector:
+    matchLabels:
+      app: landmark-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from: []             # Empty from = allow from anywhere (internet + cluster)
+      ports:
+        - protocol: TCP
+          port: 3000
+
+---
+# =============================================================================
+# Allow app to talk to the database (app → db on port 3306)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-to-db
+  namespace: landmark-devops
+spec:
+  podSelector:
+    matchLabels:
+      app: landmark-db
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: landmark-app    # Only pods with this label can reach the DB
+      ports:
+        - protocol: TCP
+          port: 3306
+
+---
+# =============================================================================
+# Allow app egress to DB and DNS only
+# =============================================================================
+# The app can talk to the database and resolve DNS, nothing else.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-egress
+  namespace: landmark-devops
+spec:
+  podSelector:
+    matchLabels:
+      app: landmark-app
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution (required for service discovery)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow traffic to the database
+    - to:
+        - podSelector:
+            matchLabels:
+              app: landmark-db
+      ports:
+        - protocol: TCP
+          port: 3306
+
+---
+# =============================================================================
+# Allow traffic only from a specific namespace (e.g., monitoring)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-monitoring
+  namespace: landmark-devops
+spec:
+  podSelector:
+    matchLabels:
+      app: landmark-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring     # Only pods in the "monitoring" namespace
+      ports:
+        - protocol: TCP
+          port: 3000
+
+---
+# =============================================================================
+# Deny database access from all except app pods
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-restrict-access
+  namespace: landmark-devops
+spec:
+  podSelector:
+    matchLabels:
+      app: landmark-db
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: landmark-app
+      ports:
+        - protocol: TCP
+          port: 3306
+  egress:
+    # DB only needs DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
