@@ -1,0 +1,190 @@
+# =============================================================================
+# QoS Class: Guaranteed
+# =============================================================================
+# requests == limits for ALL containers → Guaranteed
+# This pod will NEVER be evicted unless it exceeds its limits.
+# Use for: databases, payment services, critical workloads
+# =============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-guaranteed
+  namespace: landmark-devops
+  labels:
+    app: landmark-db
+    qos: guaranteed
+spec:
+  containers:
+    - name: mysql
+      image: mysql:8.0
+      resources:
+        requests:
+          memory: "512Mi"
+          cpu: "500m"
+        limits:
+          memory: "512Mi"      # Same as requests
+          cpu: "500m"          # Same as requests
+
+---
+# =============================================================================
+# QoS Class: Burstable
+# =============================================================================
+# requests < limits (or only requests set) → Burstable
+# This pod can use MORE than requested but will be evicted before Guaranteed pods.
+# Use for: web apps, APIs, workers that have variable load
+# =============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-burstable
+  namespace: landmark-devops
+  labels:
+    app: landmark-app
+    qos: burstable
+spec:
+  containers:
+    - name: app
+      image: landmark-devops:latest
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "512Mi"      # Higher than requests → Burstable
+          cpu: "500m"          # Higher than requests → Burstable
+
+---
+# =============================================================================
+# QoS Class: BestEffort
+# =============================================================================
+# No requests AND no limits set → BestEffort
+# This pod is the FIRST to be evicted when the node runs out of resources.
+# Use for: batch jobs, dev/test pods, non-critical tasks
+# =============================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-besteffort
+  namespace: landmark-devops
+  labels:
+    app: landmark-batch
+    qos: besteffort
+spec:
+  containers:
+    - name: batch-job
+      image: busybox
+      command: ["sh", "-c", "echo Processing... && sleep 3600"]
+      # No resources block at all → BestEffort
+
+---
+# =============================================================================
+# Deployment with Guaranteed QoS (Production Example)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: landmark-app-guaranteed
+  namespace: landmark-devops
+  labels:
+    app: landmark-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: landmark-app
+  template:
+    metadata:
+      labels:
+        app: landmark-app
+    spec:
+      containers:
+        - name: app
+          image: landmark-devops:latest
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"    # requests == limits → Guaranteed
+              cpu: "250m"        # requests == limits → Guaranteed
+
+---
+# =============================================================================
+# Deployment with Burstable QoS (Typical Web App)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: landmark-app-burstable
+  namespace: landmark-devops
+  labels:
+    app: landmark-app-burstable
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: landmark-app-burstable
+  template:
+    metadata:
+      labels:
+        app: landmark-app-burstable
+    spec:
+      containers:
+        - name: app
+          image: landmark-devops:latest
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+
+---
+# =============================================================================
+# LimitRange — sets default resource limits for a namespace
+# =============================================================================
+# If a pod doesn't specify resources, the LimitRange applies defaults.
+# This prevents BestEffort pods from being created accidentally.
+# =============================================================================
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: landmark-limit-range
+  namespace: landmark-devops
+spec:
+  limits:
+    - type: Container
+      default:            # Default limits (applied if not specified)
+        memory: "256Mi"
+        cpu: "250m"
+      defaultRequest:     # Default requests (applied if not specified)
+        memory: "128Mi"
+        cpu: "100m"
+      max:                # Maximum allowed
+        memory: "1Gi"
+        cpu: "1000m"
+      min:                # Minimum allowed
+        memory: "64Mi"
+        cpu: "50m"
+
+---
+# =============================================================================
+# ResourceQuota — limits total resources consumed in a namespace
+# =============================================================================
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: landmark-resource-quota
+  namespace: landmark-devops
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: "4Gi"
+    limits.cpu: "8"
+    limits.memory: "8Gi"
+    pods: "20"
