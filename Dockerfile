@@ -1,8 +1,9 @@
-FROM node:22-alpine
+FROM node:20-alpine
 WORKDIR /app
-COPY package*.json .
-RUN npm ci
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+COPY package.json pnpm-lock.yaml .npmrc ./
+RUN pnpm install --frozen-lockfile
 COPY . .
-RUN npm run build
+RUN pnpm build
 EXPOSE 3000
 CMD ["node", "dist/index.js"]
