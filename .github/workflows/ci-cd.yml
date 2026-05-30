@@ -32,7 +32,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: cchafah/landmark-devops:latest
+          tags: chafah/nodejs-app:latest
 
   deploy:
     needs: docker
