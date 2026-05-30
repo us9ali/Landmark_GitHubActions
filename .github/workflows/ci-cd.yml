@@ -55,5 +55,6 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
       - run: aws eks update-kubeconfig --name landmark-eks --region ${{ secrets.AWS_REGION }}
       - name: Update image tag in k8s manifest
-        run: sed -i "s|image:.*|image: chafah/nodejs-app:${{ needs.docker.outputs.image_tag }}|" k8s/05-service/deployment-service.yaml
+        run: |
+          sed -i "s|image:.*|image: chafah/nodejs-app:${{ needs.docker.outputs.image_tag }}|" k8s/05-service/deployment-service.yaml
       - run: kubectl apply -f k8s/05-service/deployment-service.yaml
