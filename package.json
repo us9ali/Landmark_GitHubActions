@@ -1,6 +1,10 @@
 {
   "name": "landmark-devops-demo",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
   "type": "module",
   "license": "MIT",
   "scripts": {
