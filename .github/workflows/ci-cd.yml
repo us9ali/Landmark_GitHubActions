@@ -12,8 +12,7 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: '22'
-      - run: npm install -g pnpm
-      - run: pnpm install --no-frozen-lockfile --config.onlyBuiltDependencies="esbuild"
+      - run: npm i -g pnpm && pnpm i --no-frozen-lockfile --config.onlyBuiltDependencies="esbuild"
       - run: pnpm build
       - run: pnpm test
 
