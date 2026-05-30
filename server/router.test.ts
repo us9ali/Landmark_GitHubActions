@@ -1,14 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
+import * as db from "./db";
+
+let memoryStore: { id: number; name: string; email: string; contact: string; address: string; country: string; createdAt: Date }[] = [];
+let nextId = 1;
+
+vi.mock("./db", async (importOriginal) => {
+  const original = await importOriginal<typeof db>();
+  return {
+    ...original,
+    isDatabaseAvailable: vi.fn(async () => true),
+    getContacts: vi.fn(async () => memoryStore),
+    createContact: vi.fn(async (data) => {
+      const entry = { id: nextId++, ...data, createdAt: new Date() };
+      memoryStore.push(entry);
+      return entry;
+    }),
+    deleteContact: vi.fn(async (id: number) => {
+      const idx = memoryStore.findIndex((c) => c.id === id);
+      if (idx === -1) return false;
+      memoryStore.splice(idx, 1);
+      return true;
+    }),
+  };
+});
+
+beforeEach(() => {
+  memoryStore = [];
+  nextId = 1;
+});
 
 function createMockContext(): TrpcContext {
   return {
     user: null,
-    req: {
-      protocol: "https",
-      headers: {},
-    } as TrpcContext["req"],
+    req: { protocol: "https", headers: {} } as TrpcContext["req"],
     res: {} as TrpcContext["res"],
   };
 }
