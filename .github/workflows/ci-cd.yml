@@ -38,7 +38,7 @@ jobs:
           push: true
           build-args: NODE_ENV=production
           tags: |
-            chafah/nodejs-app:${{ github.ref_name }}-${{ github.sha }}-${{ steps.date.outputs.today }}-prod
+            chafah/nodejs-app:${{ github.ref_name }}-${{ steps.date.outputs.today }}-prod
             chafah/nodejs-app:latest
 
   deploy:
