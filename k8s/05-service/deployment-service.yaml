@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: chafah/nodejs-app:main-2026-05-30-144753-prod
+          image: chafah/nodejs-app:main-2026-05-31-184248-prod
           ports:
             - containerPort: 3000
 
