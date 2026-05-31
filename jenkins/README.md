@@ -6,8 +6,218 @@ Complete guide to installing Jenkins on an Amazon Linux 2023 EC2 instance and ru
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Architecture](#architecture)
+1. [What is Jenkins?](#what-is-jenkins)
+2. [Key Definitions & Terminology](#key-definitions--terminology)
+3. [Jenkins Architecture](#jenkins-architecture)
+4. [How Jenkins Works](#how-jenkins-works)
+5. [Jenkins vs Other CI/CD Tools](#jenkins-vs-other-cicd-tools)
+6. [Overview](#overview)
+7. [Pipeline Architecture](#pipeline-architecture)
+8. [Launch an EC2 Instance](#launch-an-ec2-instance)
+9. [Install Jenkins on Amazon Linux](#install-jenkins-on-amazon-linux)
+10. [Access Jenkins UI](#access-jenkins-ui)
+11. [Initial Jenkins Setup](#initial-jenkins-setup)
+12. [Install Required Plugins](#install-required-plugins)
+13. [Configure Tools in Jenkins](#configure-tools-in-jenkins)
+14. [Add Credentials](#add-credentials)
+15. [Connect Jenkins to GitHub](#connect-jenkins-to-github)
+16. [Create the Pipeline Job](#create-the-pipeline-job)
+17. [Jenkinsfile Explained](#jenkinsfile-explained)
+18. [Multi-Environment Pipeline](#multi-environment-pipeline)
+19. [Deploy to EKS from Jenkins](#deploy-to-eks-from-jenkins)
+20. [Webhook Configuration](#webhook-configuration)
+21. [Troubleshooting](#troubleshooting)
+22. [Best Practices](#best-practices)
+
+---
+
+## What is Jenkins?
+
+Jenkins is an open-source automation server written in Java. It is the most widely used CI/CD tool in the industry, with over 1,800 plugins that extend its functionality. Jenkins automates the building, testing, and deployment of software.
+
+### Why Jenkins?
+
+- **Free and open-source** — no licensing costs
+- **Self-hosted** — full control over your CI/CD infrastructure
+- **Massive plugin ecosystem** — integrates with virtually any tool
+- **Highly customizable** — supports any language, any platform
+- **Large community** — extensive documentation and support
+- **Battle-tested** — used by companies of all sizes since 2011
+
+### Jenkins History
+
+- Originally called **Hudson** (2004, Sun Microsystems)
+- Forked to **Jenkins** in 2011 after Oracle acquired Sun
+- Maintained by the Jenkins community and CloudBees
+- Current LTS (Long Term Support) releases every 12 weeks
+
+---
+
+## Key Definitions & Terminology
+
+| Term | Definition |
+|------|------------|
+| **Jenkins Controller** | The main Jenkins server that manages the system, stores configuration, schedules jobs, and serves the web UI. Previously called "master". |
+| **Agent (Node)** | A machine (physical or virtual) that Jenkins uses to execute jobs. Agents offload work from the controller. |
+| **Executor** | A slot on an agent that can run a build. An agent with 2 executors can run 2 builds simultaneously. |
+| **Job (Project)** | A task that Jenkins performs — can be a build, test, deployment, or any automation. |
+| **Build** | A single execution (run) of a job. Each build has a number (#1, #2, etc.) and a result (success/failure). |
+| **Pipeline** | A suite of automated processes (build → test → deploy) defined as code in a `Jenkinsfile`. |
+| **Jenkinsfile** | A text file (Groovy syntax) that defines the pipeline. Stored in the repository alongside the code. |
+| **Stage** | A logical grouping of steps in a pipeline (e.g., "Build", "Test", "Deploy"). Stages are visualized in the UI. |
+| **Step** | A single action within a stage (e.g., run a shell command, checkout code). |
+| **Workspace** | The directory on the agent where Jenkins checks out code and runs the build. |
+| **Plugin** | An extension that adds functionality to Jenkins (Git, Docker, Slack, AWS, etc.). |
+| **Credential** | A stored secret (password, token, SSH key) that Jenkins injects into builds securely. |
+| **Webhook** | An HTTP callback from GitHub/GitLab that notifies Jenkins when code is pushed. |
+| **Upstream/Downstream** | Upstream = a job that triggers another. Downstream = the job that gets triggered. |
+| **Artifact** | A file produced by a build (e.g., JAR, Docker image, test report) that can be archived. |
+| **Declarative Pipeline** | A simplified, structured syntax for defining pipelines (recommended). Uses `pipeline {}` block. |
+| **Scripted Pipeline** | A flexible, Groovy-based syntax for complex pipelines. Uses `node {}` block. |
+| **Multibranch Pipeline** | A job type that automatically creates pipelines for each branch in a repository. |
+| **Blue Ocean** | A modern, visual UI for Jenkins pipelines (plugin). |
+| **Shared Library** | Reusable Groovy code that can be shared across multiple Jenkinsfiles. |
+| **SCM (Source Code Management)** | The version control system (Git, SVN) that Jenkins pulls code from. |
+| **Build Trigger** | What causes a build to start (webhook, schedule, manual, upstream job). |
+| **Post Actions** | Steps that run after the pipeline completes (cleanup, notifications, archiving). |
+| **Environment Variables** | Key-value pairs available during the build (can be built-in or user-defined). |
+
+---
+
+## Jenkins Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    JENKINS CONTROLLER                        │
+│                                                             │
+│  ┌───────────┐  ┌──────────┐  ┌───────────┐  ┌──────────┐ │
+│  │ Web UI    │  │ Scheduler│  │ Plugin    │  │ Config   │ │
+│  │ (Port     │  │ (Manages │  │ Manager   │  │ Store    │ │
+│  │  8080)    │  │  Builds) │  │           │  │          │ │
+│  └───────────┘  └──────────┘  └───────────┘  └──────────┘ │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+              ▼            ▼            ▼
+     ┌──────────────┐ ┌──────────┐ ┌──────────────┐
+     │   Agent 1    │ │ Agent 2  │ │   Agent 3    │
+     │ (Linux EC2)  │ │ (Docker) │ │ (Windows)    │
+     │              │ │          │ │              │
+     │ Executor 1   │ │Executor 1│ │ Executor 1   │
+     │ Executor 2   │ │Executor 2│ │ Executor 2   │
+     └──────────────┘ └──────────┘ └──────────────┘
+```
+
+### Controller Responsibilities
+- Serves the web UI on port 8080
+- Stores all job configurations and build history
+- Schedules builds and assigns them to agents
+- Manages plugins and credentials
+- Monitors agent health
+
+### Agent Responsibilities
+- Executes builds assigned by the controller
+- Reports results back to the controller
+- Can be permanent (always connected) or cloud-based (spun up on demand)
+
+---
+
+## How Jenkins Works
+
+### The Build Lifecycle
+
+```
+1. TRIGGER        →  Push to GitHub / Manual / Schedule / Upstream job
+2. CHECKOUT       →  Jenkins pulls code from the repository
+3. BUILD          →  Compile/bundle the application
+4. TEST           →  Run automated tests
+5. PACKAGE        →  Create artifact (Docker image, JAR, etc.)
+6. DEPLOY         →  Push to staging/production
+7. NOTIFY         →  Send results (Slack, email)
+8. CLEANUP        →  Remove workspace files
+```
+
+### Pipeline Types
+
+#### Declarative Pipeline (Recommended)
+```groovy
+pipeline {
+    agent any
+    stages {
+        stage('Build') {
+            steps {
+                sh 'make build'
+            }
+        }
+    }
+}
+```
+- Structured, opinionated syntax
+- Easier to read and write
+- Built-in error handling
+- Supports `when`, `environment`, `post` blocks
+
+#### Scripted Pipeline
+```groovy
+node {
+    stage('Build') {
+        sh 'make build'
+    }
+}
+```
+- Full Groovy programming language
+- More flexible but harder to maintain
+- Use only when declarative can't handle your use case
+
+### Job Types in Jenkins
+
+| Job Type | Use Case |
+|----------|----------|
+| **Freestyle** | Simple jobs with UI configuration (no code) |
+| **Pipeline** | Single-branch pipeline defined in Jenkinsfile |
+| **Multibranch Pipeline** | Auto-discovers branches, creates pipeline per branch |
+| **Organization Folder** | Scans entire GitHub org, creates jobs for all repos |
+| **Matrix** | Run same job with different configurations (OS, language version) |
+
+---
+
+## Jenkins vs Other CI/CD Tools
+
+| Feature | Jenkins | GitHub Actions | CircleCI | GitLab CI |
+|---------|---------|----------------|----------|-----------|
+| Hosting | Self-hosted | Cloud | Cloud/Self | Cloud/Self |
+| Cost | Free (infra cost) | 2,000 min free | 6,000 min free | 400 min free |
+| Config File | `Jenkinsfile` | `.github/workflows/*.yml` | `.circleci/config.yml` | `.gitlab-ci.yml` |
+| Language | Groovy | YAML | YAML | YAML |
+| Plugins | 1,800+ | 20,000+ Actions | 50+ Orbs | Built-in |
+| Learning Curve | High | Low | Medium | Medium |
+| Customization | Unlimited | Limited | Limited | Moderate |
+| Docker Support | Plugin | Native | Native | Native |
+| Scaling | Manual (add agents) | Automatic | Automatic | Automatic |
+| UI | Classic + Blue Ocean | Modern | Modern | Modern |
+
+### When to Choose Jenkins
+
+- You need full control over the CI/CD infrastructure
+- You have complex pipelines that require custom logic
+- You're in a regulated environment requiring on-premise hosting
+- You need to integrate with legacy tools
+- You want zero vendor lock-in
+
+---
+
+## Overview
+
+This project uses a `Jenkinsfile` (declarative pipeline) to:
+- Build the Node.js application (pnpm)
+- Run tests (Vitest — 59 test cases)
+- Build and push Docker images to DockerHub
+- Deploy to AWS EKS (Kubernetes)
+
+---
+
+## Pipeline Architecture
 3. [Launch an EC2 Instance](#launch-an-ec2-instance)
 4. [Install Jenkins on Amazon Linux](#install-jenkins-on-amazon-linux)
 5. [Access Jenkins UI](#access-jenkins-ui)
@@ -36,7 +246,7 @@ This project uses a `Jenkinsfile` (declarative pipeline) to:
 
 ---
 
-## Architecture
+## Pipeline Architecture
 
 ```
 ┌──────────┐       ┌──────────────┐       ┌────────────┐       ┌─────────┐
