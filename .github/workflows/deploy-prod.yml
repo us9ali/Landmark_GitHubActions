@@ -42,8 +42,8 @@ jobs:
           push: true
           build-args: NODE_ENV=production
           tags: |
-            chafah/nodejs-app:${{ steps.meta.outputs.tag }}
-            chafah/nodejs-app:latest
+            us9ali/landmark_app_nodejs:${{ steps.meta.outputs.tag }}
+            us9ali/landmark_app_nodejs:latest
 
   deploy:
     needs: docker
@@ -60,7 +60,7 @@ jobs:
       - run: aws eks update-kubeconfig --name landmark-eks --region ${{ secrets.AWS_REGION }}
       - name: Update image tag in k8s manifest
         run: |
-          sed -i "s|image:.*|image: chafah/nodejs-app:${{ needs.docker.outputs.image_tag }}|" k8s/05-service/deployment-service.yaml
+          sed -i "s|image:.*|image: us9ali/landmark_app_nodejs:${{ needs.docker.outputs.image_tag }}|" k8s/05-service/deployment-service.yaml
       - name: Commit updated manifest to repo
         run: |
           git config user.name "github-actions"
