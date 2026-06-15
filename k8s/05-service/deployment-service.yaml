@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: us9ali/landmark_app_nodejs:main-2026-06-15-180612-prod
+          image: chafah/nodejs-app:main-2026-05-31-202532-prod
           ports:
             - containerPort: 3000
 
